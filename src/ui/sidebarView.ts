@@ -1,10 +1,10 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
-import { Database } from '../database';
+import { Database, normalizeSource } from '../database';
 import { SimilarArticle, Article } from '../types';
 
 export const KATS_KABLE_VIEW_TYPE = 'kats-kable-sidebar';
 
-// Top 10 major publications - sources outside this list are potential "repeat authors"
+// Top publications - sources outside this list are potential "repeat authors"
 const TOP_PUBLICATIONS = new Set([
 	'The Atlantic',
 	'The Guardian',
@@ -15,7 +15,18 @@ const TOP_PUBLICATIONS = new Set([
 	'The New Yorker',
 	'Literary Hub',
 	'BBC',
-	'Longreads'
+	'Longreads',
+	'Vox',
+	'Nature',
+	'Medium',
+	'Quanta Magazine',
+	'Hakai Magazine',
+	'Bloomberg',
+	'New York Review',
+	'Washington Post',
+	'Aeon',
+	'MIT Technology Review',
+	'The Believer'
 ]);
 
 export class KatsKableSidebarView extends ItemView {
@@ -55,8 +66,9 @@ export class KatsKableSidebarView extends ItemView {
 	 * Check if a source is an individual writer (not a major publication)
 	 */
 	isIndividualWriter(source: string): boolean {
-		if (!source || source.trim() === '') return false;
-		return !TOP_PUBLICATIONS.has(source.trim());
+		const normalized = normalizeSource(source);
+		if (!normalized) return false;
+		return !TOP_PUBLICATIONS.has(normalized);
 	}
 
 	/**
@@ -65,14 +77,12 @@ export class KatsKableSidebarView extends ItemView {
 	getOtherArticlesBySource(currentArticle: Article): Article[] {
 		if (!this.database.isLoaded()) return [];
 		
-		const allArticles = this.database.getAllArticles();
 		const source = currentArticle.source?.trim();
 		
 		if (!source || source === '') return [];
 		
 		// Filter articles by same source, excluding current article
-		return allArticles.filter(a => 
-			a.source?.trim() === source && 
+		return this.database.getArticlesBySource(source).filter(a => 
 			a.id !== currentArticle.id
 		).sort((a, b) => a.issue_number - b.issue_number);
 	}

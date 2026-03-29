@@ -1,12 +1,13 @@
 import { Plugin, TFile, Editor, MarkdownView, EditorPosition, Notice, WorkspaceLeaf } from 'obsidian';
-import { Database } from './src/database';
+import { Database, normalizeSource } from './src/database';
 import { ArticleParser } from './src/parser';
 import { SimilarityEngine } from './src/similarity';
 import { KatsKableSettingTab } from './src/settings';
 import { KatsKableSidebarView, KATS_KABLE_VIEW_TYPE } from './src/ui/sidebarView';
 import { Article } from './src/types';
 
-// Top 10 major publications - sources outside this list are potential "repeat authors"
+// Top publications - sources outside this list are potential "repeat authors"
+// Expanded based on analysis of current database
 const TOP_PUBLICATIONS = new Set([
 	'The Atlantic',
 	'The Guardian',
@@ -17,7 +18,18 @@ const TOP_PUBLICATIONS = new Set([
 	'The New Yorker',
 	'Literary Hub',
 	'BBC',
-	'Longreads'
+	'Longreads',
+	'Vox',
+	'Nature',
+	'Medium',
+	'Quanta Magazine',
+	'Hakai Magazine',
+	'Bloomberg',
+	'New York Review',
+	'Washington Post',
+	'Aeon',
+	'MIT Technology Review',
+	'The Believer'
 ]);
 
 interface KatsKableSettings {
@@ -306,10 +318,12 @@ export default class KatsKablePlugin extends Plugin {
 
 	/**
 	 * Check if a source is an individual writer (not a major publication)
+	 * Uses normalized source names to handle dirty data
 	 */
 	isIndividualWriter(source: string): boolean {
-		if (!source || source.trim() === '') return false;
-		return !TOP_PUBLICATIONS.has(source.trim());
+		const normalized = normalizeSource(source);
+		if (!normalized) return false;
+		return !TOP_PUBLICATIONS.has(normalized);
 	}
 
 	/**
@@ -318,14 +332,12 @@ export default class KatsKablePlugin extends Plugin {
 	getOtherArticlesBySource(source: string, excludeUrl?: string): Article[] {
 		if (!this.database.isLoaded()) return [];
 		
-		const allArticles = this.database.getAllArticles();
 		const sourceTrimmed = source?.trim();
 		
 		if (!sourceTrimmed || sourceTrimmed === '') return [];
 		
-		// Filter articles by same source, excluding current article if URL provided
-		return allArticles.filter(a => 
-			a.source?.trim() === sourceTrimmed && 
+		// Use the database method for efficient lookup
+		return this.database.getArticlesBySource(sourceTrimmed).filter(a => 
 			(!excludeUrl || a.url !== excludeUrl)
 		).sort((a, b) => a.issue_number - b.issue_number);
 	}
@@ -338,7 +350,7 @@ export default class KatsKablePlugin extends Plugin {
 	}
 
 	/**
-	 * Handle hover in reading mode - populate sidebar
+	 * Handle hover in reading mode - populate sidebar with similar and repeat author info
 	 */
 	private async handleReadingModeHover(event: MouseEvent) {
 		const target = event.target as HTMLElement;
@@ -383,15 +395,27 @@ export default class KatsKablePlugin extends Plugin {
 				this.settings.maxSuggestions
 			);
 
-			// Check for repeat author (articles by same source)
-			// We don't have source info from hover, so we'll skip repeat author detection in reading mode
-			// The user would need to use command palette for full article info
+			// Look up article in database by URL to get source for repeat author detection
+			let repeatAuthorArticles: Article[] = [];
+			let articleSource = '';
+			
+			const matchingArticle = this.database.getArticleByUrl(linkHref);
+			
+			if (matchingArticle) {
+				articleSource = matchingArticle.source || '';
+				if (articleSource && this.isIndividualWriter(articleSource)) {
+					repeatAuthorArticles = this.getOtherArticlesBySource(articleSource, linkHref);
+					if (repeatAuthorArticles.length > 0) {
+						console.log(`Kat's Kable: Found ${repeatAuthorArticles.length} other articles by ${articleSource} in reading mode`);
+					}
+				}
+			}
 
 			// Populate sidebar
 			this.sidebarView.populateSidebar(
-				{ title: linkText, url: linkHref },
+				{ title: linkText, url: linkHref, source: articleSource },
 				similar,
-				[] // No repeat author info in reading mode without parsing
+				repeatAuthorArticles
 			);
 		}, 300);
 	}
@@ -510,23 +534,26 @@ export default class KatsKablePlugin extends Plugin {
 					
 					// Check for repeat author in editing mode
 					// Try to find the article in database to get source info
-					const matchingArticles = self.database.getAllArticles().filter(a => 
-						a.title === title && a.url === url
-					);
+					const matchingArticle = self.database.getArticleByUrl(url);
 					
 					let repeatAuthorArticles: Article[] = [];
-					if (matchingArticles.length > 0) {
-						const article = matchingArticles[0];
-						if (article.source && self.isIndividualWriter(article.source)) {
-							repeatAuthorArticles = self.getOtherArticlesBySource(article.source, article.url);
+					if (matchingArticle) {
+						if (matchingArticle.source && self.isIndividualWriter(matchingArticle.source)) {
+							repeatAuthorArticles = self.getOtherArticlesBySource(matchingArticle.source, url);
 						}
+						
+						self.sidebarView.populateSidebar(
+							{ title, url, source: matchingArticle.source },
+							similar,
+							repeatAuthorArticles
+						);
+					} else {
+						self.sidebarView.populateSidebar(
+							{ title, url },
+							similar,
+							repeatAuthorArticles
+						);
 					}
-					
-					self.sidebarView.populateSidebar(
-						{ title, url, source: matchingArticles[0]?.source },
-						similar,
-						repeatAuthorArticles
-					);
 				}, 300);
 				
 				return true;
@@ -562,12 +589,10 @@ export default class KatsKablePlugin extends Plugin {
 		let repeatAuthorArticles: Article[] = [];
 		let articleSource = '';
 		
-		const matchingArticles = this.database.getAllArticles().filter(a => 
-			a.url === article.url || a.title === article.title
-		);
+		const matchingArticle = this.database.getArticleByUrl(article.url);
 		
-		if (matchingArticles.length > 0) {
-			articleSource = matchingArticles[0].source || '';
+		if (matchingArticle) {
+			articleSource = matchingArticle.source || '';
 			if (articleSource && this.isIndividualWriter(articleSource)) {
 				repeatAuthorArticles = this.getOtherArticlesBySource(articleSource, article.url);
 				if (repeatAuthorArticles.length > 0) {
