@@ -74,8 +74,30 @@ export function normalizeSource(source: string): string {
 		return words[0];
 	}
 	
-	// If not a known publication, take first 1-3 words
-	const cleanWords = words.slice(0, Math.min(3, words.length));
+	// If not a known publication, extract person's name
+	// Handle formats like "Henrik Karlsson's blog", "Tim Harford's Substack"
+	let cleanWords = words.slice(0, Math.min(3, words.length));
+	
+	// Remove possessive suffixes like "'s" from the last word
+	if (cleanWords.length > 0) {
+		const lastWord = cleanWords[cleanWords.length - 1];
+		if (lastWord.endsWith("'s")) {
+			cleanWords[cleanWords.length - 1] = lastWord.slice(0, -2);
+		}
+	}
+	
+	// Filter out platform words (blog, substack, newsletter, etc.)
+	const platformWords = new Set(['blog', 'substack', 'newsletter', 'website', 'medium', 'magazine']);
+	cleanWords = cleanWords.filter(w => {
+		const wordLower = w.toLowerCase().replace(/[^\w]/g, '');
+		return !platformWords.has(wordLower);
+	});
+	
+	// Take first 2 words (usually FirstName LastName)
+	if (cleanWords.length > 2) {
+		cleanWords = cleanWords.slice(0, 2);
+	}
+	
 	let clean = cleanWords.join(' ');
 	
 	// Remove punctuation at end
