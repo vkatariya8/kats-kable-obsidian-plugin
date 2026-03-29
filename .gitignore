@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Build outputs
+*.js.map
+main.js
+
+# Environment files
+.env
+.env.local
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Database exports (large files)
+kats_kable_export.json
+kats_kable_full_export.json
+
+# Temporary files
+*.tmp
+*.temp

@@ -1,0 +1,11 @@
+{
+  "id": "kats-kable-plugin",
+  "name": "Kat's Kable Archive Intelligence",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Surfaces similar articles from your Kat's Kable archive as you write new issues. Shows connections via hover popups.",
+  "author": "Vishal Katariya",
+  "authorUrl": "https://vishalkatariya.com",
+  "fundingUrl": "",
+  "isDesktopOnly": false
+}
