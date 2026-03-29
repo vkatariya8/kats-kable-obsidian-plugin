@@ -123,8 +123,8 @@ def parse_markdown_file(filepath: Path) -> Optional[List[Article]]:
     if issue_number is None:
         return None
     
-    # Extract date from YAML frontmatter
-    date_match = re.search(r'^date:\s*(\d{4}-\d{2}-\d{2})', content, re.MULTILINE)
+    # Extract date from YAML frontmatter (handles both quoted and unquoted dates)
+    date_match = re.search(r'^date:\s*["\']?(\d{4}-\d{2}-\d{2})["\']?', content, re.MULTILINE)
     if not date_match:
         print(f"⚠ Warning: No date found in {filepath.name}")
         return None
@@ -134,7 +134,18 @@ def parse_markdown_file(filepath: Path) -> Optional[List[Article]]:
     content = re.sub(r'^---\n.*?\n---\n', '', content, flags=re.DOTALL)
     
     articles = []
+    
+    # Try new format first (* * * separators)
     sections = re.split(r'\n\* \* \*\n', content)
+    
+    # If no sections found, try old format (---\n--- separators)
+    if len(sections) <= 1:
+        sections = re.split(r'\n---\s*\n---\s*\n', content)
+    
+    # If still no sections, try splitting by ### headers (Issue 349 style)
+    if len(sections) <= 1:
+        # Split by ### 1., ### 2., etc.
+        sections = re.split(r'\n(?=###\s*\d+\.)', content)
     
     for section in sections:
         section = section.strip()
@@ -142,14 +153,115 @@ def parse_markdown_file(filepath: Path) -> Optional[List[Article]]:
             continue
             
         # Try to extract article number(s) and content
+        
+        # Check for format: ### **1**  [Title](URL) (Issue 72 style)
+        heading_match = re.match(r'#{1,6}\s*\*\*\s*(\d+)\s*\*\*\s+\[([^\]]+)\]\(([^)]+)\)(?:\s+-\s+(.+))?', section, re.DOTALL)
+        
+        # Check for format: ### 1. [Title](URL) (Source): (Issue 349 style)
+        if not heading_match:
+            heading_match = re.match(r'#{1,6}\s*(\d+)\.\s*\[([^\]]+)\]\(([^)]+)\)\s*\(([^)]+)\):?', section, re.DOTALL)
+        
+        # Check for format: ### 1. [Title](URL) without source (Issue 104 style)
+        if not heading_match:
+            heading_match = re.match(r'#{1,6}\s*(\d+)\.\s*\[([^\]]+)\]\(([^)]+)\)', section, re.DOTALL)
+        
+        if heading_match:
+            position = int(heading_match.group(1))
+            title = heading_match.group(2).strip()
+            url = heading_match.group(3).strip()
+            source = heading_match.group(4).strip() if len(heading_match.groups()) >= 4 and heading_match.group(4) else ""
+            
+            # Get commentary (everything after the first line)
+            first_newline = section.find('\n')
+            if first_newline != -1:
+                commentary = section[first_newline:].strip()
+            else:
+                commentary = ""
+            
+            # Clean up commentary
+            commentary = re.sub(r'!\[.*?\]\(.*?\)', '', commentary)
+            commentary = re.sub(r'> ', '', commentary)
+            commentary = re.sub(r'\n+', ' ', commentary).strip()
+            
+            if title and url:
+                articles.append(Article(
+                    issue_number=issue_number,
+                    issue_type=issue_type,
+                    special_theme=special_theme,
+                    date=date,
+                    position=position,
+                    title=title,
+                    url=url,
+                    source=source,
+                    commentary=commentary
+                ))
+            continue
+        
         # Check for combined articles: **3 & 4** or **3 and 4**
         combined_match = re.match(r'\*\*\s*(\d+)\s*[&+and]+\s*(\d+)\s*\*\*\s*\n?(.+)', section, re.DOTALL | re.IGNORECASE)
         single_match = re.match(r'\*\*\s*(\d+)\s*\*\*\s*\n?(.+)', section, re.DOTALL)
         
         if not combined_match and not single_match:
-            # Try alternative pattern without bold
+            # Try alternative pattern without bold (e.g., "1." or "1)")
             combined_match = re.match(r'^(\d+)\s*[&+and]+\s*(\d+)[\.\)]\s*\n?(.+)', section, re.DOTALL | re.IGNORECASE)
             single_match = re.match(r'^(\d+)[\.\)]\s*\n?(.+)', section, re.DOTALL)
+        
+        if not combined_match and not single_match:
+            # Try old format: just number on its own line, then link on next line
+            # Use re.finditer to find ALL articles in the section (not just at the start)
+            old_format_pattern = r'(?:^|\n)(\d+)\s*\n+\[([^\]]+)\]\(([^)]+)\)'
+            old_format_matches = list(re.finditer(old_format_pattern, section, re.DOTALL))
+            
+            if old_format_matches:
+                for i, old_format_match in enumerate(old_format_matches):
+                    position = int(old_format_match.group(1))
+                    title = old_format_match.group(2).strip()
+                    url = old_format_match.group(3).strip()
+                    
+                    # Get content from this article to the next (or end of section)
+                    start_pos = old_format_match.start()
+                    if i + 1 < len(old_format_matches):
+                        # Get content until the next article
+                        end_pos = old_format_matches[i + 1].start()
+                        article_content = section[start_pos:end_pos]
+                    else:
+                        # Get content until the end
+                        article_content = section[start_pos:]
+                    
+                    # Extract source if present after link (on same line)
+                    link_end_in_content = article_content.find(url) + len(url)
+                    rest_of_line = article_content[link_end_in_content:article_content.find('\n', link_end_in_content)]
+                    source = ""
+                    if rest_of_line.strip().startswith('-'):
+                        source = rest_of_line.strip()[1:].strip()
+                    
+                    # Get commentary (everything after the first line break after the link)
+                    first_newline_after_link = article_content.find('\n', link_end_in_content)
+                    if first_newline_after_link != -1:
+                        commentary = article_content[first_newline_after_link:].strip()
+                    else:
+                        commentary = ""
+                    
+                    # Clean up commentary - remove image tags and normalize whitespace
+                    commentary = re.sub(r'!\[.*?\]\(.*?\)', '', commentary)
+                    commentary = re.sub(r'> ', '', commentary)
+                    commentary = re.sub(r'\n+', ' ', commentary).strip()
+                    
+                    if title and url:
+                        articles.append(Article(
+                            issue_number=issue_number,
+                            issue_type=issue_type,
+                            special_theme=special_theme,
+                            date=date,
+                            position=position,
+                            title=title,
+                            url=url,
+                            source=source,
+                            commentary=commentary
+                        ))
+                continue
+            else:
+                continue
         
         if combined_match:
             # Multiple articles in one section (e.g., "3 & 4")
@@ -394,9 +506,18 @@ def update_single_issue(issue_number: int, api_key: str, csv_data: dict):
         return False
     
     # Parse markdown file
+    # First try regular issue filename (e.g., 71.md)
     md_file = ARCHIVE_DIR / f"{issue_number}.md"
+    
+    # If not found, look for special edition (e.g., 74-climate.md, 102-fruits.md)
     if not md_file.exists():
-        print(f"  ✗ File not found: {md_file}")
+        # Find any file that starts with the issue number
+        for file_path in ARCHIVE_DIR.glob(f"{issue_number}-*.md"):
+            md_file = file_path
+            break
+    
+    if not md_file.exists():
+        print(f"  ✗ File not found: {ARCHIVE_DIR}/{issue_number}.md or {ARCHIVE_DIR}/{issue_number}-*.md")
         return False
     
     articles = parse_markdown_file(md_file)
