@@ -59,6 +59,62 @@ def parse_issue_filename(filename: str) -> tuple:
             return None, 'unknown', None
 
 
+def parse_combined_articles(line: str) -> List[tuple]:
+    """Parse a line that may contain multiple article links like '[Title1](URL1) & [Title2](URL2)'
+    Returns list of (title, url) tuples
+    """
+    articles = []
+    
+    # Pattern to match markdown links: [Title](URL)
+    link_pattern = r'\[([^\]]+)\]\(([^)]+)\)'
+    
+    # Find all links in the line
+    matches = list(re.finditer(link_pattern, line))
+    
+    if len(matches) >= 2:
+        # Multiple articles in one line
+        for match in matches:
+            title = match.group(1).strip()
+            url = match.group(2).strip()
+            if title and url:
+                articles.append((title, url))
+    elif len(matches) == 1:
+        # Single article
+        match = matches[0]
+        title = match.group(1).strip()
+        url = match.group(2).strip()
+        if title and url:
+            articles.append((title, url))
+    
+    return articles
+
+
+def extract_source_from_line(line: str) -> str:
+    """Extract source from a line after the last markdown link
+    Looks for patterns like ')- Source' or '] - Source'
+    """
+    # Find last markdown link
+    last_link_end = line.rfind(')')
+    if last_link_end == -1:
+        return ""
+    
+    # Look for '- Source' pattern after the last link
+    remaining = line[last_link_end+1:].strip()
+    
+    # Remove leading dash if present
+    if remaining.startswith('-'):
+        remaining = remaining[1:].strip()
+    
+    # Take only the first part before any punctuation or newline indicators
+    # Split by common separators that indicate end of source
+    for sep in ['  ', '\n', '...', ' _', '. ', '? ', '! ']:
+        if sep in remaining:
+            remaining = remaining.split(sep)[0]
+            break
+    
+    return remaining.strip()
+
+
 def parse_markdown_file(filepath: Path) -> Optional[List[Article]]:
     """Parse a markdown file and extract all articles"""
     content = filepath.read_text()
@@ -85,52 +141,97 @@ def parse_markdown_file(filepath: Path) -> Optional[List[Article]]:
         if not section:
             continue
             
-        # Try to extract article number and content
-        article_match = re.match(r'\*\*\s*(\d+)\s*\*\*\s*\n?(.+)', section, re.DOTALL)
-        if not article_match:
-            article_match = re.match(r'^(\d+)[\.\)]\s*\n?(.+)', section, re.DOTALL)
+        # Try to extract article number(s) and content
+        # Check for combined articles: **3 & 4** or **3 and 4**
+        combined_match = re.match(r'\*\*\s*(\d+)\s*[&+and]+\s*(\d+)\s*\*\*\s*\n?(.+)', section, re.DOTALL | re.IGNORECASE)
+        single_match = re.match(r'\*\*\s*(\d+)\s*\*\*\s*\n?(.+)', section, re.DOTALL)
         
-        if not article_match:
-            continue
+        if not combined_match and not single_match:
+            # Try alternative pattern without bold
+            combined_match = re.match(r'^(\d+)\s*[&+and]+\s*(\d+)[\.\)]\s*\n?(.+)', section, re.DOTALL | re.IGNORECASE)
+            single_match = re.match(r'^(\d+)[\.\)]\s*\n?(.+)', section, re.DOTALL)
+        
+        if combined_match:
+            # Multiple articles in one section (e.g., "3 & 4")
+            start_pos = int(combined_match.group(1))
+            end_pos = int(combined_match.group(2))
+            article_content = combined_match.group(3).strip()
             
-        position = int(article_match.group(1))
-        article_content = article_match.group(2).strip()
-        
-        # Extract title and URL: [Title](URL) - Source
-        link_match = re.match(r'\[([^\]]+)\]\(([^)]+)\)(?:\s+-\s+(.+))?', article_content, re.DOTALL)
-        if not link_match:
-            continue
+            # Extract commentary (everything after the links line)
+            lines = article_content.split('\n')
+            links_line = lines[0] if lines else ""
+            commentary = '\n'.join(lines[1:]).strip() if len(lines) > 1 else ""
             
-        title = link_match.group(1).replace('\n', ' ').strip()
-        url = link_match.group(2).strip()
-        source = link_match.group(3).replace('\n', ' ').strip() if link_match.group(3) else ""
-        
-        # Extract commentary
-        link_line_end = article_content.find(')')
-        if link_match.group(3):
-            link_line_end = article_content.find('\n', link_line_end)
-        else:
-            link_line_end += 1
-        
-        commentary = article_content[link_line_end:].strip()
-        
-        # Clean up commentary
-        commentary = re.sub(r'!\[.*?\]\(.*?\)', '', commentary)
-        commentary = re.sub(r'> ', '', commentary)
-        commentary = re.sub(r'\n+', ' ', commentary).strip()
-        
-        if title and url:
-            articles.append(Article(
-                issue_number=issue_number,
-                issue_type=issue_type,
-                special_theme=special_theme,
-                date=date,
-                position=position,
-                title=title,
-                url=url,
-                source=source,
-                commentary=commentary
-            ))
+            # Parse all article links from the first line
+            article_links = parse_combined_articles(links_line)
+            source = extract_source_from_line(links_line)
+            
+            # Create article objects for each link found
+            expected_count = end_pos - start_pos + 1
+            if len(article_links) != expected_count:
+                print(f"  ⚠ Warning: Expected {expected_count} articles but found {len(article_links)} in section {start_pos}-{end_pos}")
+            
+            for i, (title, url) in enumerate(article_links):
+                position = start_pos + i
+                
+                # Clean up commentary
+                clean_commentary = re.sub(r'!\[.*?\]\(.*?\)', '', commentary)
+                clean_commentary = re.sub(r'> ', '', clean_commentary)
+                clean_commentary = re.sub(r'\n+', ' ', clean_commentary).strip()
+                
+                if title and url:
+                    articles.append(Article(
+                        issue_number=issue_number,
+                        issue_type=issue_type,
+                        special_theme=special_theme,
+                        date=date,
+                        position=position,
+                        title=title,
+                        url=url,
+                        source=source,
+                        commentary=clean_commentary
+                    ))
+                    
+        elif single_match:
+            # Single article section
+            position = int(single_match.group(1))
+            article_content = single_match.group(2).strip()
+            
+            # Extract title and URL: [Title](URL) - Source
+            link_match = re.match(r'\[([^\]]+)\]\(([^)]+)\)(?:\s+-\s+(.+))?', article_content, re.DOTALL)
+            if not link_match:
+                continue
+                
+            title = link_match.group(1).replace('\n', ' ').strip()
+            url = link_match.group(2).strip()
+            source = link_match.group(3).replace('\n', ' ').strip() if link_match.group(3) else ""
+            
+            # Extract commentary
+            link_line_end = article_content.find(')')
+            if link_match.group(3):
+                link_line_end = article_content.find('\n', link_line_end)
+            else:
+                link_line_end += 1
+            
+            commentary = article_content[link_line_end:].strip()
+            
+            # Clean up commentary
+            commentary = re.sub(r'!\[.*?\]\(.*?\)', '', commentary)
+            commentary = re.sub(r'> ', '', commentary)
+            commentary = re.sub(r'\n+', ' ', commentary).strip()
+            
+            if title and url:
+                articles.append(Article(
+                    issue_number=issue_number,
+                    issue_type=issue_type,
+                    special_theme=special_theme,
+                    date=date,
+                    position=position,
+                    title=title,
+                    url=url,
+                    source=source,
+                    commentary=commentary
+                ))
     
     return articles
 
