@@ -408,10 +408,69 @@ export default class KatsKablePlugin extends Plugin {
 				const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
 				if (pos === null) return false;
 				
-				const line = view.state.doc.lineAt(pos);
-				const lineText = line.text;
+				const currentLine = view.state.doc.lineAt(pos);
 				
-				const linkMatch = lineText.match(/\[([^\]]+)\]\(([^)]+)\)/);
+				// Look for article link - first check current line, then look upwards
+				let targetLine = currentLine;
+				let linkMatch = null;
+				let linesChecked = 0;
+				const maxLinesToCheck = 20; // Don't look too far up
+				
+				while (linesChecked < maxLinesToCheck && targetLine.number > 1) {
+					const lineText = targetLine.text;
+					
+					// Check if this line contains a markdown link
+					linkMatch = lineText.match(/\[([^\]]+)\]\(([^)]+)\)/);
+					
+					if (linkMatch) {
+						const url = linkMatch[2];
+						// Make sure it's an external link (article)
+						if (url.startsWith('http')) {
+							break; // Found the article link
+						}
+					}
+					
+					// Stop if we hit an article separator (* * *) or new article marker
+					if (lineText.includes('* * *') || lineText.match(/^\*\*\d+\*\*/)) {
+						// We've gone too far up - we're in a different article section
+						// Look back down to find the article link
+						break;
+					}
+					
+					// Move to previous line
+					targetLine = view.state.doc.line(targetLine.number - 1);
+					linesChecked++;
+				}
+				
+				// If we still don't have a link, check if we broke early due to separator
+				// In that case, look forward from the separator to find the next article link
+				if (!linkMatch && linesChecked >= maxLinesToCheck) {
+					return false;
+				}
+				
+				// If we broke due to finding a separator, look forward for the link
+				if (!linkMatch && (targetLine.text.includes('* * *') || targetLine.text.match(/^\*\*\d+\*\*/))) {
+					// Move forward to find the article link
+					let forwardLine = targetLine;
+					let forwardChecks = 0;
+					const maxForwardChecks = 5;
+					
+					while (forwardChecks < maxForwardChecks && forwardLine.number < view.state.doc.lines) {
+						forwardLine = view.state.doc.line(forwardLine.number + 1);
+						linkMatch = forwardLine.text.match(/\[([^\]]+)\]\(([^)]+)\)/);
+						
+						if (linkMatch) {
+							const url = linkMatch[2];
+							if (url.startsWith('http')) {
+								targetLine = forwardLine;
+								break;
+							}
+						}
+						forwardChecks++;
+					}
+				}
+				
+				// If still no link found, return
 				if (!linkMatch) return false;
 				
 				const title = linkMatch[1];
@@ -419,58 +478,58 @@ export default class KatsKablePlugin extends Plugin {
 				
 				if (!url.startsWith('http')) return false;
 				
-				const lineStart = line.from;
-				const relativePos = pos - lineStart;
-				const linkStart = linkMatch.index || 0;
-				const linkEnd = linkStart + linkMatch[0].length;
+				// Check if mouse is within reasonable distance of the article section
+				// We allow hovering anywhere in the article section, not just on the link
+				const lineDistance = Math.abs(currentLine.number - targetLine.number);
+				if (lineDistance > 50) return false; // Too far from the article link
 				
-				if (relativePos >= linkStart - 5 && relativePos <= linkEnd + 5) {
-					// Debounce
-					if ((window as any)._katsKableEditorTimeout) {
-						clearTimeout((window as any)._katsKableEditorTimeout);
-					}
-					
-					(window as any)._katsKableEditorTimeout = setTimeout(async () => {
-						const currentPos = view.posAtCoords({ x: event.clientX, y: event.clientY });
-						if (currentPos === null) return;
-						
-						const currentLine = view.state.doc.lineAt(currentPos);
-						if (currentLine.number !== line.number) return;
-						
-						if (!self.sidebarView) return;
-						
-						const similar = await self.similarityEngine.findSimilar(
-							title,
-							'',
-							self.settings.similarityThreshold,
-							self.settings.maxSuggestions
-						);
-						
-						// Check for repeat author in editing mode
-						// Try to find the article in database to get source info
-						const matchingArticles = self.database.getAllArticles().filter(a => 
-							a.title === title && a.url === url
-						);
-						
-						let repeatAuthorArticles: Article[] = [];
-						if (matchingArticles.length > 0) {
-							const article = matchingArticles[0];
-							if (article.source && self.isIndividualWriter(article.source)) {
-								repeatAuthorArticles = self.getOtherArticlesBySource(article.source, article.url);
-							}
-						}
-						
-						self.sidebarView.populateSidebar(
-							{ title, url, source: matchingArticles[0]?.source },
-							similar,
-							repeatAuthorArticles
-						);
-					}, 300);
-					
-					return true;
+				// Debounce
+				if ((window as any)._katsKableEditorTimeout) {
+					clearTimeout((window as any)._katsKableEditorTimeout);
 				}
 				
-				return false;
+				(window as any)._katsKableEditorTimeout = setTimeout(async () => {
+					// Check if mouse is still in the same general area
+					const currentPos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+					if (currentPos === null) return;
+					
+					const checkLine = view.state.doc.lineAt(currentPos);
+					
+					// Make sure we're still in the same article section
+					// (within 50 lines of the original article link)
+					if (Math.abs(checkLine.number - targetLine.number) > 50) return;
+					
+					if (!self.sidebarView) return;
+					
+					const similar = await self.similarityEngine.findSimilar(
+						title,
+						'',
+						self.settings.similarityThreshold,
+						self.settings.maxSuggestions
+					);
+					
+					// Check for repeat author in editing mode
+					// Try to find the article in database to get source info
+					const matchingArticles = self.database.getAllArticles().filter(a => 
+						a.title === title && a.url === url
+					);
+					
+					let repeatAuthorArticles: Article[] = [];
+					if (matchingArticles.length > 0) {
+						const article = matchingArticles[0];
+						if (article.source && self.isIndividualWriter(article.source)) {
+							repeatAuthorArticles = self.getOtherArticlesBySource(article.source, article.url);
+						}
+					}
+					
+					self.sidebarView.populateSidebar(
+						{ title, url, source: matchingArticles[0]?.source },
+						similar,
+						repeatAuthorArticles
+					);
+				}, 300);
+				
+				return true;
 			}
 		});
 	}
